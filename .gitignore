@@ -1,0 +1,9 @@
+node_modules
+.next
+.env
+.env.local
+.outbox.jsonl
+*.tsbuildinfo
+next-env.d.ts
+public/vendor/
+.realtime.jsonl

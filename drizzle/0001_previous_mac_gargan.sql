@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "driver_tokens_one_active_idx" ON "driver_tokens" USING btree ("vehicle_id") WHERE "driver_tokens"."status" = 'ACTIVE';

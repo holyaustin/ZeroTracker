@@ -1,0 +1,47 @@
+{
+  "name": "zerotracker",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "test": "node test/unit.mjs && node test/e2e.mjs",
+    "predev": "node scripts/copy-ably.mjs",
+    "prebuild": "node scripts/copy-ably.mjs",
+    "postinstall": "node scripts/copy-ably.mjs",
+    "check-env": "node scripts/check-env.mjs",
+    "hash-password": "node scripts/hash-password.mjs",
+    "test:ui": "python3 test/ui.py && python3 test/driver.py && (cd test && PYTHONPATH=. python3 offline.py && PYTHONPATH=. python3 map.py)"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "ably": "^2.30.0",
+    "bcryptjs": "^2.4.3",
+    "drizzle-orm": "^0.36.4",
+    "jose": "^5.9.6",
+    "leaflet": "^1.9.4",
+    "next": "^15.1.0",
+    "pg": "^8.23.1",
+    "postcss": "^8.5.32",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwindcss": "^4.3.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/leaflet": "^1.9.22",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.0.0",
+    "drizzle-kit": "^0.28.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
