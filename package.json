@@ -14,7 +14,9 @@
     "postinstall": "node scripts/copy-ably.mjs",
     "check-env": "node scripts/check-env.mjs",
     "hash-password": "node scripts/hash-password.mjs",
-    "test:ui": "python3 test/ui.py && python3 test/driver.py && (cd test && PYTHONPATH=. python3 offline.py && PYTHONPATH=. python3 map.py)"
+    "test:ui": "python3 test/ui.py && python3 test/driver.py && (cd test && PYTHONPATH=. python3 offline.py && PYTHONPATH=. python3 map.py)",
+    "sync-shared": "node scripts/sync-shared.mjs",
+    "mobile:typecheck": "cd mobile && npm run typecheck"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",

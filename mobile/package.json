@@ -1,0 +1,34 @@
+{
+  "name": "zerotracker-driver",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "sync-shared": "node ../scripts/sync-shared.mjs",
+    "typecheck": "tsc --noEmit",
+    "build:apk": "npm run sync-shared && eas build -p android --profile preview",
+    "build:android": "npm run sync-shared && eas build -p android --profile production",
+    "build:ios": "npm run sync-shared && eas build -p ios --profile production"
+  },
+  "dependencies": {
+    "@react-native-community/netinfo": "12.0.1",
+    "expo": "~58.0.22",
+    "expo-battery": "~58.0.3",
+    "expo-linking": "~58.0.15",
+    "expo-location": "~58.0.20",
+    "expo-secure-store": "~58.0.2",
+    "expo-sensors": "~58.0.4",
+    "expo-sqlite": "~58.0.15",
+    "expo-status-bar": "~58.0.4",
+    "expo-task-manager": "~58.0.13",
+    "react": "19.3.0",
+    "react-native": "0.88.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.0",
+    "typescript": "^5.7.2"
+  }
+}

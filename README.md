@@ -4,6 +4,13 @@ Multi-tenant fleet tracking. Drivers open a private link in their phone browser 
 
 **Stack:** Next.js 15 (App Router, TypeScript) · PostgreSQL (Neon) + Drizzle · Ably (realtime) · Brevo (email) · Leaflet (map) · Tailwind · deployed on Vercel.
 
+## Two ways for a driver to track
+
+* **Web link** (`/d/<link>`): zero install. Best for quick onboarding and occasional drivers. Browsers pause GPS when the screen locks.
+* **Native app** (`mobile/`, Expo / React Native): installable APK or store app. Keeps tracking with the screen off. Same link, same backend, same map. See `mobile/README.md`.
+
+A manager's link works in both: the web page offers an *Open in the ZeroTracker Driver app* link, and the app accepts the same link pasted or tapped.
+
 ## What's in the box
 
 | Surface | URL | What it does |
@@ -74,7 +81,7 @@ Tests use a **local** PostgreSQL and **wipe it**. They refuse to run against non
 
 ```bash
 export TEST_DATABASE_URL=postgres://user:pass@localhost:5432/zt_test
-npm test                          # unit tests (126) + API/database tests (377); builds the app first
+npm test                          # unit tests + API/database tests (incl. the native app's core logic); builds the app first
 pip install playwright && python -m playwright install chromium
 npm run test:ui                   # real-browser tests: manager, driver sensors, offline sync, map
 ```
@@ -89,6 +96,7 @@ npm run test:ui                   # real-browser tests: manager, driver sensors,
 
 ## 7. Known limits (please read)
 
+* **Native app not tested on a device.** Its logic is tested against the real backend with simulated sensors and the app bundles for Android and iOS, but real GPS, permission dialogs, foreground services and screen-off behaviour need your phones (checklist section H).
 * **Browser tracking has hard limits.** Phones may pause GPS when the screen locks or the browser is backgrounded. ZeroTracker keeps the screen awake, detects backgrounding, warns the driver and logs it, but cannot prevent it. If you need guaranteed background tracking, a native app is required.
 * **iOS Safari** has no Vibration API and no Battery API; motion permission needs a tap. These degrade gracefully (on-screen alert, battery shown as n/a).
 * **Offline data uploads when the page is open.** If the driver's browser is killed while offline, saved points stay on the phone and upload when the page is reopened (there is no background sync because this is a web page, not an installed app). The phone keeps at most 10,000 queued events.

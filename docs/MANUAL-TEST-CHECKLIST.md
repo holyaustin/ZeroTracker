@@ -45,3 +45,16 @@ Automated tests cover the logic with simulated sensors. These checks cover what 
 - [ ] Lawyer has reviewed `/privacy` and `/terms`; the [brackets] are filled in.
 - [ ] `APP_URL` is the real domain; HTTPS works; `/api/health` returns ok.
 - [ ] Owner password is long and unique; `JWT_SECRET` and `CRON_SECRET` are random.
+
+## H. Native driver app (real Android and iPhone)
+- [ ] Build the APK (`cd mobile && npm run build:apk`), install it on a real phone, paste a driver link. Vehicle name and company appear; a revoked/invalid link shows a clear error.
+- [ ] Consent → Start Trip → permission prompts: allow location **"all the time"**. A persistent "ZeroTracker is sharing your location" notification appears (Android).
+- [ ] **Lock the screen and drive/walk for 5+ minutes.** The marker keeps moving on the manager's map with the screen off. (This is the main reason the app exists.)
+- [ ] Refuse "all the time": the app warns that tracking will pause with the screen off, and offers *Open settings*.
+- [ ] Settings → Apps → ZeroTracker → Battery → Unrestricted. Repeat the screen-off test on each handset model your drivers use (Tecno/Infinix/Xiaomi/Samsung differ).
+- [ ] Impact test with the screen ON: bump the phone, an impact/pothole incident and a vibration follow. Then repeat with the screen OFF and note whether the accelerometer still reports (Android may restrict it). Record the result; if it doesn't work, impact detection is foreground-only on that device.
+- [ ] Airplane mode for 2 minutes while moving, then back online: saved points sync in order, no duplicates (feed and route).
+- [ ] Force-close the app mid-trip and reopen it: the trip resumes and any queued points upload.
+- [ ] Manager revokes the link: the app locks out within ~15 seconds, stops the notification and location, and shows "Access revoked".
+- [ ] Suspend the company from the owner portal: the app shows "Tracking is currently disabled".
+- [ ] Web and app drivers appear together on one map; the same vehicle can't be driven from both at once (one link = one vehicle).

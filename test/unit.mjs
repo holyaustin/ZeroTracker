@@ -273,6 +273,16 @@ const grouped = Object.entries(FEED_GROUPS).filter(([k]) => k !== "all").flatMap
 eq("every incident type belongs to a filter group", INCIDENT_TYPES.every((t) => grouped.includes(t)), true);
 eq("no type appears in two groups", new Set(grouped).size, grouped.length);
 
+console.log("Shared code (web + native)");
+import { readdirSync, readFileSync } from "node:fs";
+{
+  const a = join(process.cwd(), "packages/shared/src"), b = join(process.cwd(), "mobile/src/shared");
+  const fa = readdirSync(a).sort(), fb = readdirSync(b).sort();
+  eq("native app has a copy of every shared file", fb, fa);
+  eq("…and each copy is identical to the source (run `node scripts/sync-shared.mjs` if this fails)", fa.every((f) => readFileSync(join(a, f), "utf8") === readFileSync(join(b, f), "utf8")), true);
+  eq("web re-exports the shared driver logic rather than keeping its own copy", readFileSync(join(process.cwd(), "src/lib/driverLogic.ts"), "utf8").includes("packages/shared/src/driverLogic"), true);
+}
+
 queue._resetMemory(); S = fakeServer(); S.mode = "net"; H = mkEngine(S, { baseDelayMs: 150 }); H.net.online = false;
 await H.e.send(D("pend0001")); H.net.online = true; H.target.dispatchEvent(new Event("online"));
 await until(() => S.calls.length >= 1); const afterFirst = S.calls.length;

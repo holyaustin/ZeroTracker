@@ -3,7 +3,8 @@ export const DB_NAME = "zerotracker-offline";
 export const STORE = "events";
 export const MAX_QUEUE = 10_000;
 
-export type QueuedEvent = { seq?: number; kind: string; clientEventId: string; ts: number; [k: string]: unknown };
+export type { QueuedEvent } from "../../packages/shared/src/queueStore";
+import type { QueuedEvent } from "../../packages/shared/src/queueStore";
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 function openDb(): Promise<IDBDatabase | null> {

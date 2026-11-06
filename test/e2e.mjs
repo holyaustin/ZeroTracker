@@ -4,6 +4,8 @@ import { spawn, execSync } from "node:child_process";
 import { readFileSync, existsSync, rmSync } from "node:fs";
 import bcrypt from "bcryptjs";
 import { spawnSync } from "node:child_process";
+import { build } from "esbuild";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -737,6 +739,227 @@ async function main() {
     const printed = hp.stdout.match(/\$2[aby]\$12\$[./A-Za-z0-9]{53}/)?.[0];
     ok("hash-password prints a verifiable bcrypt hash plus the escaped .env.local form", hp.status === 0 && !!printed && bcrypt.compareSync("a-long-owner-password", printed) && hp.stdout.includes("\\$2"));
     ok("hash-password refuses a short password", spawnSync("node", ["scripts/hash-password.mjs", "short"], { encoding: "utf8" }).status === 1);
+
+    console.log("\nNative driver app: core logic against the real server");
+    {
+      const nvDir = mkdtempSync(join(tmpdir(), "zt-native-"));
+      await build({ entryPoints: [join(process.cwd(), "mobile/src/core/index.ts")], bundle: true, format: "esm", platform: "node", outfile: join(nvDir, "core.mjs"), logLevel: "silent" });
+      const N = await import(join(nvDir, "core.mjs"));
+      const sleep2 = (ms) => new Promise((r2) => setTimeout(r2, ms));
+      const until2 = async (fn, ms = 6000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return true; await sleep2(40); } return false; };
+      const TOK = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4";
+
+      // ---- link parsing --------------------------------------------------------------------------------------------
+      const pl = N.parseDriverLink;
+      const base = (x) => pl(x)?.baseUrl, tokOf = (x) => pl(x)?.token;
+      ok("https link → base URL + token", base(`https://app.example.com/d/${TOK}`) === "https://app.example.com" && tokOf(`https://app.example.com/d/${TOK}`) === TOK);
+      ok("whitespace, trailing slash, query string and upper-case scheme are tolerated", base(`  HTTPS://app.example.com/d/${TOK}/?utm=x  \n`) === "https://app.example.com");
+      ok("a path prefix is kept (app served under /zt)", base(`https://h.example.com/zt/d/${TOK}`) === "https://h.example.com/zt");
+      ok("port numbers are kept", base(`https://h.example.com:8443/d/${TOK}`) === "https://h.example.com:8443");
+      ok("zerotracker:// deep link with base", base(`zerotracker://d/${TOK}?base=${encodeURIComponent("https://app.example.com")}`) === "https://app.example.com" && tokOf(`zerotracker://d/${TOK}?base=${encodeURIComponent("https://app.example.com")}`) === TOK);
+      ok("http allowed only for local/dev hosts", !!pl(`http://localhost:3000/d/${TOK}`) && !!pl(`http://192.168.1.5:3000/d/${TOK}`) && !!pl(`http://10.0.2.2:3000/d/${TOK}`));
+      ok("plain http to a real host is refused (driver links never travel unencrypted)", pl(`http://app.example.com/d/${TOK}`) === null && pl(`zerotracker://d/${TOK}?base=${encodeURIComponent("http://app.example.com")}`) === null);
+      for (const [label, v] of [["empty", ""], ["not a link", "hello"], ["no /d/ segment", `https://app.example.com/${TOK}`], ["token too short", "https://a.example.com/d/abc"], ["token with bad characters", `https://a.example.com/d/${TOK}!!`],
+        ["javascript: scheme", `javascript:alert(1)//d/${TOK}`], ["file: scheme", `file:///d/${TOK}`], ["deep link without base", `zerotracker://d/${TOK}`], ["oversized input", "https://a.example.com/d/" + "a".repeat(3000)], ["null", null], ["number", 42]])
+        ok(`rejects ${label}`, pl(v) === null);
+
+      // ---- SQLite queue (the real SQL, run on node:sqlite) -----------------------------------------------------------
+      const sqlAdapter = (db) => ({ exec: async (q) => { db.exec(q); }, run: async (q, a = []) => { db.prepare(q).run(...a); }, all: async (q, a = []) => db.prepare(q).all(...a).map((r) => ({ ...r })) });
+      const mkEv = (id, kind = "ping", extra = {}) => ({ kind, clientEventId: id, ts: 1000, lat: 6.3, lng: 5.6, speedKmh: null, charging: false, ...extra });
+      let sq = await N.createSqliteQueue(sqlAdapter(new DatabaseSync(":memory:")));
+      await sq.add(mkEv("sq000001")); await sq.add(mkEv("sq000002", "incident", { type: "IMPACT", gForce: 4.5 })); await sq.add(mkEv("sq000003"));
+      ok("SQLite queue: count and insertion order", (await sq.count()) === 3 && (await sq.peek(10)).map((e) => e.clientEventId).join() === "sq000001,sq000002,sq000003");
+      ok("…values survive the JSON round trip (null, boolean, number)", (await sq.peek(1))[0].speedKmh === null && (await sq.peek(1))[0].charging === false && (await sq.peek(3))[1].gForce === 4.5);
+      await sq.add(mkEv("sq000001")); ok("the same event id is never queued twice", (await sq.count()) === 3);
+      const first = await sq.peek(1); await sq.remove([first[0].seq]);
+      ok("remove by key", (await sq.peek(10)).map((e) => e.clientEventId).join() === "sq000002,sq000003");
+      ok("stored rows carry a seq key but it is not duplicated inside the payload", typeof (await sq.peek(1))[0].seq === "number");
+      await sq.clear(); ok("clear", (await sq.count()) === 0);
+      sq = await N.createSqliteQueue(sqlAdapter(new DatabaseSync(":memory:")), 3);
+      for (let i = 0; i < 4; i++) await sq.add(mkEv(`ping${i}xxxx`, "ping", { ts: i }));
+      await sq.add(mkEv("incident1x", "incident", { type: "IMPACT" }));
+      const kept = (await sq.peek(10)).map((e) => e.clientEventId);
+      ok("over capacity: oldest pings dropped first, incident kept, newest pings kept", kept.length === 3 && kept.includes("incident1x") && kept.includes("ping3xxxx") && kept.includes("ping2xxxx"), kept.join());
+      const dbFile = join(nvDir, "queue.db");
+      let f1 = new DatabaseSync(dbFile); const q1s = await N.createSqliteQueue(sqlAdapter(f1)); await q1s.add(mkEv("persist01")); await q1s.add(mkEv("persist02")); f1.close();
+      const q2s = await N.createSqliteQueue(sqlAdapter(new DatabaseSync(dbFile)));
+      ok("queued events survive the app being killed (file database reopened)", (await q2s.peek(10)).map((e) => e.clientEventId).join() === "persist01,persist02");
+
+      // ---- fake phone ------------------------------------------------------------------------------------------------
+      const fakePhone = (o = {}) => {
+        const p2 = { bg: true, vibes: [], stopped: { loc: false, motion: false, battery: false, app: false }, fix: null, motionCb: null, battCb: null, appCb: null, started: 0, onError: null, ...o };
+        p2.startLocation = async (onFix, onError) => { p2.started++; if (p2.denied) { onError(true); throw new Error("denied"); } p2.fix = onFix; p2.onError = onError; return { background: p2.bg, stop: () => { p2.stopped.loc = true; } }; };
+        if (!p2.noMotion) p2.startMotion = (cb) => { p2.motionCb = cb; return () => { p2.stopped.motion = true; }; };
+        p2.startBattery = async (cb) => { p2.battCb = cb; cb({ pct: 80, charging: false }); return () => { p2.stopped.battery = true; }; };
+        p2.watchAppState = (cb) => { p2.appCb = cb; return () => { p2.stopped.app = true; }; };
+        p2.vibrate = (pat) => p2.vibes.push(pat);
+        return p2;
+      };
+      const net = () => { const n2 = { up: true, calls: [], lose: 0, l: { online: new Set(), offline: new Set() } };
+        n2.isOnline = () => n2.up;
+        n2.target = { addEventListener: (t, f) => n2.l[t].add(f), removeEventListener: (t, f) => n2.l[t].delete(f) };
+        n2.fire = (t) => n2.l[t].forEach((f) => f());
+        n2.fetch = async (url, init) => { n2.calls.push(String(url).replace(BASE, "")); if (!n2.up) throw new TypeError("network down");
+          const res = await fetch(url, init); if (n2.lose > 0 && String(url).endsWith("/batch")) { n2.lose--; throw new TypeError("response lost"); } return res; };
+        return n2; };
+      const mkCtl = async (raw, phone, o = {}) => { const nw = o.net ?? net(); const store = o.store ?? (await N.createSqliteQueue(sqlAdapter(new DatabaseSync(":memory:"))));
+        const ctl = new N.TripController({ token: raw, baseUrl: BASE, store, platform: phone, fetchImpl: nw.fetch, isOnline: nw.isOnline, target: nw.target, minPingMs: 150, heartbeatMs: 400, baseDelayMs: 30, ...o.opts });
+        return { ctl, nw, store }; };
+      const rowsOf = (vid) => q1("select * from telemetry where vehicle_id=$1 order by ts", [vid]);
+      const incOf = (vid, t) => q1("select * from incidents where vehicle_id=$1 and type=$2 order by ts", [vid, t]);
+      const fix = (o = {}) => ({ latitude: 6.335, longitude: 5.6037, accuracy: 9, speed: 13.89, heading: 90, ...o });
+
+      // ---- link check ------------------------------------------------------------------------------------------------
+      const v1 = await newVeh(mc, "Native Van 1");
+      let ph = fakePhone(); let { ctl, nw, store } = await mkCtl(v1.raw, ph);
+      let sess = await ctl.session();
+      ok("session(): valid link → vehicle label and company name", sess.ok === true && sess.vehicleLabel === "Native Van 1" && sess.orgName === "Acme Logistics");
+      let bad = await (await mkCtl("Z".repeat(32), fakePhone())).ctl.session();
+      ok("session(): unknown link → INVALID (401)", bad.ok === false && bad.code === "INVALID" && bad.status === 401);
+
+      // ---- trip: GPS, speed, throttle, heartbeat --------------------------------------------------------------------------
+      await ctl.start();
+      ok("start(): GPS, motion, battery and app-state listeners all started", ph.started === 1 && !!ph.fix && !!ph.motionCb && !!ph.battCb && !!ph.appCb && ctl.getState().phase === "active");
+      ok("background-capable tracking reported to the UI", ctl.getState().backgroundTracking === true && ctl.getState().gps === "waiting");
+      ph.fix(fix());
+      ok("first fix: state shows GPS ok, 50 km/h, ±9 m", ctl.getState().gps === "ok" && ctl.getState().speedKmh === 50 && ctl.getState().accuracyM === 9);
+      ok("first ping reaches the database immediately", await until2(async () => (await rowsOf(v1.vid)).length >= 1));
+      let nr = (await rowsOf(v1.vid))[0];
+      ok("stored: position, 50 km/h, accuracy, heading, battery 80 not charging, FOREGROUND", nr.lat === 6.335 && nr.lng === 5.6037 && nr.speed_kmh === 50 && nr.accuracy_m === 9 && nr.heading === 90 && nr.battery_pct === 80 && nr.charging === false && nr.app_state === "FOREGROUND");
+      const n0 = (await rowsOf(v1.vid)).length;
+      for (let i = 0; i < 30; i++) ph.fix(fix({ latitude: 6.4 + i * 0.001 }));
+      await sleep2(250); const burst = (await rowsOf(v1.vid)).length - n0;
+      ok(`30 fixes in a burst are throttled (${burst} sent)`, burst >= 0 && burst <= 2);
+      ph.fix(fix({ latitude: 6.5, speed: -1 })); await sleep2(250);
+      ok("iOS 'unknown speed' (-1) is stored as null, never 0 or negative", (await rowsOf(v1.vid)).some((r) => r.lat === 6.5 && r.speed_kmh === null));
+      const n1 = (await rowsOf(v1.vid)).length; await sleep2(1300);
+      ok("stationary heartbeat: the last fix is re-sent while the phone sits still", (await rowsOf(v1.vid)).length >= n1 + 2);
+      ok("every event id is unique and server-valid", new Set((await rowsOf(v1.vid)).map((r) => r.client_event_id)).size === (await rowsOf(v1.vid)).length);
+
+      // ---- app state, battery -------------------------------------------------------------------------------------------
+      ph.appCb("BACKGROUNDED");
+      ok("switching away logs BACKGROUNDED", await until2(async () => (await incOf(v1.vid, "BACKGROUNDED")).length === 1));
+      ph.appCb("BACKGROUNDED"); await sleep2(100); ok("a repeated state change is not logged twice", (await incOf(v1.vid, "BACKGROUNDED")).length === 1);
+      ph.fix(fix({ latitude: 6.51 }));
+      ok("pings while backgrounded are marked BACKGROUNDED", await until2(async () => (await rowsOf(v1.vid)).some((r) => r.app_state === "BACKGROUNDED")));
+      ph.appCb("FOREGROUND"); ok("returning logs FOREGROUNDED", await until2(async () => (await incOf(v1.vid, "FOREGROUNDED")).length === 1));
+      ph.battCb({ pct: 19, charging: false }); ok("19% unplugged → one LOW_BATTERY incident", await until2(async () => (await incOf(v1.vid, "LOW_BATTERY")).length === 1) && ctl.getState().lowBattery === true);
+      ph.battCb({ pct: 17, charging: false }); await sleep2(150); ok("still dropping: no second incident", (await incOf(v1.vid, "LOW_BATTERY")).length === 1);
+      ph.battCb({ pct: 17, charging: true }); ok("charging clears the warning", ctl.getState().lowBattery === false);
+      ph.battCb({ pct: 15, charging: false }); ok("unplugged again → warns again", await until2(async () => (await incOf(v1.vid, "LOW_BATTERY")).length === 2));
+
+      // ---- impacts -------------------------------------------------------------------------------------------------------
+      ph.motionCb(1.0); ok("resting phone → impact sensor 'on'", ctl.getState().motion === "on");
+      ph.motionCb(3.5); await sleep2(150); ok("3.5 g does not trigger", (await incOf(v1.vid, "POTHOLE")).length === 0 && ph.vibes.length === 0);
+      ph.motionCb(4.08);
+      ok("4.08 g → POTHOLE incident with g-force, message and position", await until2(async () => (await incOf(v1.vid, "POTHOLE")).length === 1));
+      const pot = (await incOf(v1.vid, "POTHOLE"))[0];
+      ok("…stored correctly", pot.g_force === 4.08 && pot.message.includes("4.1 G") && pot.lat !== null);
+      ok("double-buzz vibration [200,100,200] fired", ph.vibes.length === 1 && JSON.stringify(ph.vibes[0]) === "[200,100,200]");
+      ph.motionCb(9); ph.motionCb(9); await sleep2(200); ok("3 s cooldown: further spikes ignored (one incident, one buzz)", (await incOf(v1.vid, "POTHOLE")).length === 1 && ph.vibes.length === 1);
+      await sleep2(3000); ph.motionCb(8.15);
+      ok("after the cooldown: IMPACT (≥ 6 g) with g-force 8.15", await until2(async () => (await incOf(v1.vid, "IMPACT")).length === 1) && (await incOf(v1.vid, "IMPACT"))[0].g_force === 8.15 && ctl.getState().lastImpact.type === "IMPACT");
+
+      // ---- ending a trip -------------------------------------------------------------------------------------------------
+      await ctl.stop();
+      ok("End trip: every sensor listener is stopped", ph.stopped.loc && ph.stopped.motion && ph.stopped.battery && ph.stopped.app && ctl.getState().phase === "idle");
+      const nEnd = (await rowsOf(v1.vid)).length; ph.fix(fix({ latitude: 7 })); await sleep2(700);
+      ok("fixes after the trip ended are ignored", (await rowsOf(v1.vid)).length === nEnd);
+      ctl.destroy();
+
+      // ---- offline, retries, restart -------------------------------------------------------------------------------------------
+      const v2 = await newVeh(mc, "Native Van 2");
+      const dbPath = join(nvDir, "trip2.db"); let fdb = new DatabaseSync(dbPath);
+      ph = fakePhone(); ({ ctl, nw, store } = await mkCtl(v2.raw, ph, { store: await N.createSqliteQueue(sqlAdapter(fdb)) }));
+      await ctl.start(); ph.fix(fix({ latitude: 6.6 }));
+      ok("online baseline", await until2(async () => (await rowsOf(v2.vid)).length === 1));
+      nw.up = false; nw.fire("offline");
+      for (let i = 0; i < 6; i++) { ph.fix(fix({ latitude: 6.61 + i * 0.01 })); await sleep2(180); }
+      ph.motionCb(1); ph.motionCb(4.5); await sleep2(200);
+      ok("offline: events pile up in the phone's SQLite queue and the UI says so", (await store.count()) >= 5 && ctl.getState().connection === "offline" && ctl.getState().queued >= 5);
+      ok("offline: nothing reached the server", (await rowsOf(v2.vid)).length === 1);
+      const queued = await store.peek(1000);
+      nw.up = true; nw.fire("online");
+      ok("back online: the queue drains by itself", await until2(async () => (await store.count()) === 0));
+      ok("…through the batch endpoint", nw.calls.some((u) => u.endsWith("/api/telemetry/batch")));
+      const got = new Set((await rowsOf(v2.vid)).map((r) => r.client_event_id));
+      ok("every offline ping is stored exactly once", queued.filter((e) => e.kind === "ping").every((e) => got.has(`${v2.vid}:${e.clientEventId}`)) && got.size === (await rowsOf(v2.vid)).length);
+      ok("the offline pothole reached the server", (await incOf(v2.vid, "POTHOLE")).length === 1);
+      ctl.destroy();
+
+      const v3 = await newVeh(mc, "Native Van 3");
+      ph = fakePhone(); ({ ctl, nw, store } = await mkCtl(v3.raw, ph)); nw.up = false; await ctl.start();
+      for (let i = 0; i < 3; i++) { ph.fix(fix({ latitude: 6.7 + i * 0.01 })); await sleep2(200); }
+      nw.up = true; nw.lose = 1; nw.fire("online");
+      ok("lost response: the phone retries the same batch", await until2(async () => nw.calls.filter((u) => u.endsWith("/batch")).length >= 2 && (await store.count()) === 0));
+      ok("server stored each event once despite the replay", (await rowsOf(v3.vid)).length === new Set((await rowsOf(v3.vid)).map((r) => r.client_event_id)).size && (await rowsOf(v3.vid)).length >= 3);
+      ctl.destroy();
+
+      const v4 = await newVeh(mc, "Native Van 4");
+      const killPath = join(nvDir, "kill.db"); fdb = new DatabaseSync(killPath);
+      ph = fakePhone(); ({ ctl, nw, store } = await mkCtl(v4.raw, ph, { store: await N.createSqliteQueue(sqlAdapter(fdb)) })); nw.up = false; await ctl.start();
+      for (let i = 0; i < 4; i++) { ph.fix(fix({ latitude: 6.8 + i * 0.01 })); await sleep2(200); }
+      const beforeKill = (await store.peek(100)).map((e) => e.clientEventId); ctl.destroy(); fdb.close();
+      ok("events queued before the app is killed", beforeKill.length >= 3 && (await rowsOf(v4.vid)).length === 0);
+      ph = fakePhone(); ({ ctl, nw, store } = await mkCtl(v4.raw, ph, { store: await N.createSqliteQueue(sqlAdapter(new DatabaseSync(killPath))) }));
+      ok("app relaunched: the leftover queue is delivered on its own (no trip needed)", await until2(async () => (await rowsOf(v4.vid)).length >= beforeKill.length));
+      const gotKill = new Set((await rowsOf(v4.vid)).map((r) => r.client_event_id));
+      ok("…every pre-kill event arrived exactly once", beforeKill.every((id) => gotKill.has(`${v4.vid}:${id}`)) && gotKill.size === (await rowsOf(v4.vid)).length);
+      ctl.destroy();
+
+      // ---- ending a trip while offline keeps uploading -------------------------------------------------------------------------
+      const v5 = await newVeh(mc, "Native Van 5");
+      ph = fakePhone(); ({ ctl, nw, store } = await mkCtl(v5.raw, ph)); nw.up = false; await ctl.start();
+      ph.fix(fix({ latitude: 6.9 })); await sleep2(250); await ctl.stop();
+      ok("trip ended while offline: data stays queued", (await store.count()) >= 1 && (await rowsOf(v5.vid)).length === 0);
+      nw.up = true; nw.fire("online");
+      ok("…and still uploads when the connection returns", await until2(async () => (await store.count()) === 0 && (await rowsOf(v5.vid)).length >= 1));
+      ctl.destroy();
+
+      // ---- lockout --------------------------------------------------------------------------------------------------------------
+      const v6 = await newVeh(mc, "Native Van 6");
+      ph = fakePhone(); ({ ctl, nw, store } = await mkCtl(v6.raw, ph)); await ctl.start(); ph.fix(fix({ latitude: 7.1 }));
+      ok("streaming before revocation", await until2(async () => (await rowsOf(v6.vid)).length >= 1));
+      nw.up = false; ph.fix(fix({ latitude: 7.11 })); await sleep2(250);
+      await api("DELETE", `/api/tokens/${v6.tid}`, { cookie: mc }); nw.up = true; nw.fire("online");
+      ok("manager revokes: controller locks with code REVOKED", await until2(() => ctl.getState().phase === "locked") && ctl.getState().lockCode === "REVOKED");
+      ok("lockout stops GPS, motion, battery and app-state listeners", ph.stopped.loc && ph.stopped.motion && ph.stopped.battery && ph.stopped.app);
+      ok("lockout wipes the saved queue", (await store.count()) === 0);
+      const callsAtLock = nw.calls.length; ph.fix(fix({ latitude: 7.2 })); await sleep2(900);
+      ok("no further network calls after lockout", nw.calls.length === callsAtLock);
+      ctl.destroy();
+
+      const v7 = await newVeh(mc, "Native Van 7");
+      ph = fakePhone(); ({ ctl } = await mkCtl(v7.raw, ph)); await ctl.start();
+      await api("DELETE", `/api/tokens/${v7.tid}`, { cookie: mc }); const sr = await ctl.session();
+      ok("session() on a revoked link → REVOKED (410) and the controller locks", sr.ok === false && sr.code === "REVOKED" && sr.status === 410 && ctl.getState().phase === "locked" && ph.stopped.loc);
+      ctl.destroy();
+
+      const vB2 = await newVeh(mcB, "Native Beta Van"); await patch(orgB, { action: "SUSPEND", note: "native test" });
+      ph = fakePhone(); ({ ctl } = await mkCtl(vB2.raw, ph)); await ctl.start(); ph.fix(fix());
+      ok("company suspended → ORG_DISABLED lock", await until2(() => ctl.getState().phase === "locked") && ctl.getState().lockCode === "ORG_DISABLED");
+      ctl.destroy(); await patch(orgB, { action: "APPROVE" });
+
+      // ---- permissions & capabilities -----------------------------------------------------------------------------------------
+      const v8 = await newVeh(mc, "Native Van 8");
+      ph = fakePhone({ denied: true }); ({ ctl } = await mkCtl(v8.raw, ph)); await ctl.start();
+      ok("location permission denied → state 'denied', nothing sent", ctl.getState().gps === "denied" && (await rowsOf(v8.vid)).length === 0);
+      ctl.destroy();
+      ph = fakePhone({ bg: false }); ({ ctl } = await mkCtl(v8.raw, ph)); await ctl.start();
+      ok("only foreground permission granted → UI told tracking won't survive screen-off", ctl.getState().backgroundTracking === false);
+      ctl.destroy();
+      ph = fakePhone({ noMotion: true }); ({ ctl } = await mkCtl(v8.raw, ph)); await ctl.start();
+      ok("phone without accelerometer → impact sensor 'unsupported' immediately", ctl.getState().motion === "unsupported"); ctl.destroy();
+      ph = fakePhone(); ({ ctl } = await mkCtl(v8.raw, ph)); await ctl.start();
+      ok("accelerometer that never reports data → 'unsupported' after 4 s (never a false 'Active')", await until2(() => ctl.getState().motion === "unsupported", 6000));
+      await ctl.stop(); ctl.destroy();
+
+      // ---- UI subscription ----------------------------------------------------------------------------------------------------------
+      ph = fakePhone(); ({ ctl } = await mkCtl(v8.raw, ph)); let notified = 0; const unsub = ctl.subscribe(() => notified++);
+      await ctl.start(); ph.fix(fix()); await sleep2(100); const nSeen = notified; unsub(); ph.fix(fix({ latitude: 6.99 })); await sleep2(100);
+      ok("UI subscribers are notified of changes and can unsubscribe", nSeen > 3 && notified === nSeen); await ctl.stop(); ctl.destroy();
+      rmSync(nvDir, { recursive: true, force: true });
+    }
 
     console.log("\nRate limiting");
     const ip = "203.0.113.9"; codes = [];

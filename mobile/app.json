@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "ZeroTracker Driver",
+    "slug": "zerotracker-driver",
+    "version": "1.0.0",
+    "scheme": "zerotracker",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#020617",
+    "ios": {
+      "bundleIdentifier": "com.zerotracker.driver",
+      "supportsTablet": false,
+      "infoPlist": {
+        "UIBackgroundModes": ["location"],
+        "NSLocationWhenInUseUsageDescription": "ZeroTracker shares this phone's location with your fleet manager while a trip is running.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Choose \"Always\" so tracking continues when the screen is off. Sharing happens only while a trip is running.",
+        "NSMotionUsageDescription": "Motion readings are used only to detect severe impacts and potholes during a trip."
+      }
+    },
+    "android": {
+      "package": "com.zerotracker.driver",
+      "permissions": [
+        "ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_LOCATION", "POST_NOTIFICATIONS", "VIBRATE"
+      ]
+    },
+    "plugins": [
+      ["expo-location", {
+        "isAndroidBackgroundLocationEnabled": true,
+        "isAndroidForegroundServiceEnabled": true,
+        "isIosBackgroundLocationEnabled": true,
+        "locationAlwaysAndWhenInUsePermission": "Choose \"Allow all the time\" so tracking continues when the screen is off. Sharing happens only while a trip is running."
+      }],
+      "expo-secure-store",
+      "expo-sqlite"
+    ]
+  }
+}

@@ -36,6 +36,8 @@ export default function DriverNode({ token, tokenId, vehicleId, label, orgName, 
   phaseRef.current = phase;
 
   const [motionPermission, setMotionPermission] = useState<MotionPermission>("unknown");
+  const [appLink, setAppLink] = useState<string | null>(null);
+  useEffect(() => { setAppLink(`zerotracker://d/${token}?base=${encodeURIComponent(window.location.origin)}`); }, [token]);
 
   /** Stops everything and wipes the binding and any queued data. Called on 401/403/410 or a token-revoked push. */
   const lockout = useCallback((code: string) => {
@@ -145,6 +147,7 @@ export default function DriverNode({ token, tokenId, vehicleId, label, orgName, 
           <p className="text-sm text-slate-400">You are assigned to</p>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-white">{label}</h1>
           <p className="mx-auto mt-3 max-w-xs text-sm text-slate-400">Tap Start when you begin your trip. Keep this page open and your screen on.</p>
+          {appLink && <a href={appLink} data-testid="open-in-app" className="mx-auto mt-3 block max-w-xs text-xs text-slate-500 underline">Need tracking to continue with the screen off? Open in the ZeroTracker Driver app</a>}
           <button onClick={() => {
             const perm = requestMotionPermission();     // must be called inside this tap (iOS)
             perm.then((r) => { setMotionPermission(r); if (r === "granted") store.set(K.motion, "granted"); });
